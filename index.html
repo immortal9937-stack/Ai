@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Assistant">
+<meta name="theme-color" content="#0b0b12">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+  :root { --bg:#0b0b12; --fg:#f2f2f7; --dim:#8e8e99; --accent:#7c5cff; --green:#1db954; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif; }
+  body { display:flex; flex-direction:column; padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom); }
+  header { display:flex; justify-content:space-between; align-items:center; padding:12px 0; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  #gear { background:none; border:0; color:var(--dim); font-size:22px; }
+  #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:8px 0; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:18px; font-size:16px; line-height:1.35; }
+  .me { align-self:flex-end; background:var(--accent); }
+  .bot { align-self:flex-start; background:#1c1c28; }
+  .sys { align-self:center; color:var(--dim); font-size:13px; }
+  #actions { display:flex; flex-direction:column; gap:8px; }
+  #actions a { display:block; text-align:center; padding:14px; border-radius:14px; background:var(--green);
+    color:#fff; font-weight:600; text-decoration:none; }
+  #live { text-align:center; color:var(--dim); font-size:14px; min-height:20px; padding:6px 0; }
+  #dock { display:flex; flex-direction:column; align-items:center; gap:10px; padding:10px 0 18px; }
+  #orb { width:96px; height:96px; border-radius:50%; border:0; color:#fff; font-size:34px;
+    background:radial-gradient(circle at 30% 30%, #a38bff, var(--accent)); box-shadow:0 0 0 0 rgba(124,92,255,.6); }
+  #orb.on { animation:pulse 1.8s infinite; }
+  #orb.off { background:#2a2a38; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(124,92,255,.6)} 70%{box-shadow:0 0 0 26px rgba(124,92,255,0)} 100%{box-shadow:0 0 0 0 rgba(124,92,255,0)} }
+  #textrow { display:flex; gap:8px; width:100%; }
+  #textrow input { flex:1; padding:12px 14px; border-radius:14px; border:0; background:#1c1c28; color:var(--fg); font-size:16px; }
+  #textrow button { padding:0 16px; border-radius:14px; border:0; background:#2a2a38; color:var(--fg); font-size:16px; }
+  dialog { background:#14141d; color:var(--fg); border:0; border-radius:20px; width:min(92vw,420px); padding:20px; }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog label { display:block; font-size:13px; color:var(--dim); margin:14px 0 6px; }
+  dialog input[type=text], dialog input[type=password] { width:100%; padding:11px; border-radius:10px; border:0; background:#1f1f2c; color:var(--fg); font-size:16px; }
+  dialog .row { display:flex; justify-content:space-between; align-items:center; margin-top:14px; font-size:15px; }
+  dialog button.close { margin-top:20px; width:100%; padding:13px; border:0; border-radius:12px; background:var(--accent); color:#fff; font-size:16px; }
+  small { color:var(--dim); display:block; margin-top:6px; line-height:1.4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Assistant</h1>
+  <button id="gear" aria-label="Settings">⚙︎</button>
+</header>
+
+<div id="log"></div>
+<div id="actions"></div>
+<div id="live"></div>
+
+<div id="dock">
+  <button id="orb" class="off" aria-label="Toggle listening">🎙</button>
+  <form id="textrow">
+    <input id="txt" placeholder="…or type a command" autocomplete="off" enterkeyhint="send">
+    <button>Go</button>
+  </form>
+</div>
+
+<dialog id="settings">
+  <h2 style="margin:0 0 4px">Settings</h2>
+  <label>Wake word</label>
+  <input type="text" id="wake" placeholder="jarvis">
+  <div class="row"><span>Require wake word</span><input type="checkbox" id="needWake"></div>
+  <div class="row"><span>Speak replies</span><input type="checkbox" id="tts"></div>
+  <label>Anthropic API key (optional, for smart answers)</label>
+  <input type="password" id="key" placeholder="sk-ant-...">
+  <small>Stored only in this browser. Without a key, built-in commands (Spotify, YouTube, Maps, etc.) still work.</small>
+  <button class="close" id="saveBtn">Done</button>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+const cfg = {
+  wake: store.get('wake', 'jarvis'),
+  needWake: store.get('needWake', true),
+  tts: store.get('tts', true),
+  key: store.get('key', '')
+};
+
+const log = $('#log'), live = $('#live'), actions = $('#actions'), orb = $('#orb');
+function add(text, cls){
+  const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight;
+}
+
+/* ---------- speech out ---------- */
+let speaking = false;
+function say(text){
+  add(text, 'bot');
+  if (!cfg.tts || !('speechSynthesis' in window)) return;
+  speaking = true;
+  const u = new SpeechSynthesisUtterance(text);
+  u.onend = u.onerror = () => { speaking = false; };
+  speechSynthesis.speak(u);
+}
+
+/* ---------- opening apps ---------- */
+function showLink(url, label){
+  actions.innerHTML = '';
+  const a = document.createElement('a'); a.href = url; a.textContent = label;
+  actions.appendChild(a);
+}
+function openApp(url, label){
+  // iOS only allows leaving the page reliably from a user tap, so we try
+  // automatically and also leave a big button as a fallback.
+  showLink(url, label);
+  try { window.location.href = url; } catch {}
+}
+const spotifySearch = q => openApp('https://open.spotify.com/search/' + encodeURIComponent(q), '▶ Open Spotify: ' + q);
+
+/* ---------- command brain ---------- */
+async function handle(raw){
+  let text = raw.trim();
+  if (!text) return;
+  add(text, 'me');
+  const t = text.toLowerCase().replace(/[.!?]+$/, '');
+  let m;
+
+  if ((m = t.match(/^(?:play|put on|search(?: for)?|find)\s+(.+?)(?:\s+(?:on|in)\s+spotify)?$/)) && !/youtube|maps/.test(t)) {
+    say('Searching Spotify for ' + m[1]); return spotifySearch(m[1]);
+  }
+  if (/^open spotify$/.test(t)) { say('Opening Spotify'); return openApp('spotify://', 'Open Spotify'); }
+  if ((m = t.match(/^(?:search )?youtube (?:for )?(.+)$/)) || (m = t.match(/^(?:play|search|find) (.+) on youtube$/))) {
+    say('Searching YouTube for ' + m[1]);
+    return openApp('https://www.youtube.com/results?search_query=' + encodeURIComponent(m[1]), 'Open YouTube');
+  }
+  if ((m = t.match(/^(?:directions to|navigate to|take me to)\s+(.+)$/))) {
+    say('Getting directions to ' + m[1]);
+    return openApp('https://maps.apple.com/?dirs=1&daddr=' + encodeURIComponent(m[1]), 'Open Maps');
+  }
+  if ((m = t.match(/^(?:google|search the web for|look up)\s+(.+)$/))) {
+    say('Searching for ' + m[1]);
+    return openApp('https://www.google.com/search?q=' + encodeURIComponent(m[1]), 'Open results');
+  }
+  if ((m = t.match(/^(?:text|message)\s+(.+)$/))) { return openApp('sms:', 'Open Messages'); }
+  if ((m = t.match(/^call\s+([\d\s\-+()]+)$/))) { return openApp('tel:' + m[1].replace(/\D/g,''), 'Call ' + m[1]); }
+  if (/^what(?:'s| is) the time/.test(t)) return say(new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}));
+
+  if (!cfg.key) { say("I can do Spotify, YouTube, Maps and web searches. Add an API key in settings for open-ended questions."); return; }
+  return askClaude(text);
+}
+
+const history = [];
+async function askClaude(text){
+  live.textContent = 'Thinking…';
+  history.push({role:'user', content:text});
+  const system = `You are a concise voice assistant on an iPhone. Reply ONLY with JSON: {"reply": string (short, spoken-friendly), "action": null | {"type":"spotify_search","query":string} | {"type":"open_url","url":string,"label":string}}. Use spotify_search whenever the user wants music. Use open_url (https or app URL schemes like maps.apple.com) when they want to open something.`;
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{
+        'content-type':'application/json',
+        'x-api-key': cfg.key,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body: JSON.stringify({ model:'claude-sonnet-5-5', max_tokens:400, system, messages: history.slice(-10) })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error?.message || r.status);
+    const out = data.content?.[0]?.text || '';
+    history.push({role:'assistant', content: out});
+    let obj;
+    try { obj = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)); }
+    catch { obj = { reply: out, action: null }; }
+    if (obj.reply) say(obj.reply);
+    if (obj.action?.type === 'spotify_search') spotifySearch(obj.action.query);
+    else if (obj.action?.type === 'open_url') openApp(obj.action.url, obj.action.label || 'Open');
+  } catch (e) {
+    say('Sorry, that failed: ' + e.message);
+  } finally { live.textContent = ''; }
+}
+
+/* ---------- always-on listening ---------- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec, listening = false, wakeLock = null;
+
+async function keepAwake(){
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && listening) { keepAwake(); startRec(); }
+});
+
+function startRec(){
+  if (!SR) { add('Speech recognition isn’t supported here. Use the text box.', 'sys'); return; }
+  try { rec && rec.abort(); } catch {}
+  rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = navigator.language || 'en-US';
+  rec.onresult = e => {
+    if (speaking) return;               // don't hear ourselves
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (res.isFinal) onUtterance(res[0].transcript);
+      else interim += res[0].transcript;
+    }
+    live.textContent = interim;
+  };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      add('Microphone / Siri dictation permission denied. Enable it in iOS Settings.', 'sys');
+      setListening(false);
+    }
+  };
+  rec.onend = () => { if (listening) setTimeout(startRec, 250); };  // iOS ends sessions often; restart
+  try { rec.start(); } catch {}
+}
+
+function onUtterance(s){
+  live.textContent = '';
+  let text = s.trim();
+  if (cfg.needWake) {
+    const w = cfg.wake.toLowerCase();
+    const i = text.toLowerCase().indexOf(w);
+    if (i === -1) return;
+    text = text.slice(i + w.length).replace(/^[\s,.:!-]+/, '');
+    if (!text) { say('Yes?'); return; }
+  }
+  handle(text);
+}
+
+function setListening(on){
+  listening = on;
+  orb.classList.toggle('on', on); orb.classList.toggle('off', !on);
+  if (on) { keepAwake(); startRec(); add(cfg.needWake ? `Listening — say “${cfg.wake}” first.` : 'Listening…', 'sys'); }
+  else { try { rec && rec.abort(); } catch {} try { wakeLock && wakeLock.release(); } catch {} live.textContent = ''; }
+}
+orb.addEventListener('click', () => {
+  // unlock speech synthesis on a user gesture
+  if ('speechSynthesis' in window) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+  setListening(!listening);
+});
+
+/* ---------- typed input + settings ---------- */
+$('#textrow').addEventListener('submit', e => { e.preventDefault(); const v = $('#txt').value; $('#txt').value = ''; handle(v); });
+
+const dlg = $('#settings');
+$('#gear').onclick = () => {
+  $('#wake').value = cfg.wake; $('#needWake').checked = cfg.needWake; $('#tts').checked = cfg.tts; $('#key').value = cfg.key;
+  dlg.showModal();
+};
+$('#saveBtn').onclick = () => {
+  cfg.wake = ($('#wake').value || 'jarvis').trim(); cfg.needWake = $('#needWake').checked;
+  cfg.tts = $('#tts').checked; cfg.key = $('#key').value.trim();
+  for (const k of Object.keys(cfg)) store.set(k, cfg[k]);
+  dlg.close();
+};
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+add('Tap the mic to start listening. Try: “' + cfg.wake + ', play Blinding Lights on Spotify”.', 'sys');
+</script>
+</body>
+</html>
